@@ -8,7 +8,7 @@ const {Worker, workerData} = require("worker_threads");
 const TOKENS = [];
 const WORKERS = [];
 
-/**
+/** 
  * 初始化
  * @returns {Promise<void>}
  */
