@@ -1,14 +1,27 @@
-const {Connection, Keypair, PublicKey} = require("@solana/web3.js");
+const { Connection, Keypair, PublicKey } = require("@solana/web3.js");
 const bs58 = require('bs58');
 const CryptoJS = require("crypto-js");
 const readline = require('readline');
-const {Command} = require('commander');
-const {Worker, workerData} = require("worker_threads");
+const { Command } = require('commander');
+const { Worker, workerData } = require("worker_threads");
+const ExpiringQueue = require("./ExpiringQueue");
 
 const TOKENS = [];
-const WORKERS = [];
+const QUOTE_WORKERS = [];
+const SEND_WORKERS = [];
 
-/** 
+const logs = [];
+//const tradeQueue = new ExpiringQueue(200); 先不考虑队列，理论上发送应该快过获取数据和构建交易
+
+let workerIndex = 0;
+
+function getNextSendWorkerIndex() {
+    const next = workerIndex;
+    workerIndex = (workerIndex + 1) % SEND_WORKERS.length;
+    return next;
+}
+
+/**
  * 初始化
  * @returns {Promise<void>}
  */
@@ -34,7 +47,8 @@ async function init() {
         .option('--max_accounts <max_accounts>', 'maxAccounts', '24')
         .option('--privateKey <privateKey>', '加密私钥')
         .option('--localAddress <localAddress>', '发送jito的localaddress')
-        .option('--nginx_server <nginx_server>', '发送jito的nginx server');
+        // .option('--nginx_server <nginx_server>', '发送jito的nginx server');
+        .option('--statistical_interval <statistical_interval>', '发送统计的间隔 statistical_interval', '60');
 
     program.parse(process.argv);
     const options = program.opts();
@@ -44,21 +58,20 @@ async function init() {
     // if(CLIENT_SERVER === undefined || CLIENT_SERVER.split(',').length === 0) {
     //     throw new Error('--client 客户端地址为空')
     // }
-    if(CLIENT_SERVER) {
-        console.log(`客户端: ${CLIENT_SERVER.split(',').map(host =>  `http://${host}`)}`)
+    if (CLIENT_SERVER) {
+        console.log(`客户端: ${CLIENT_SERVER.split(',').map(host => `http://${host}`)}`)
     }
 
     // localAddress
     const LOCALADDRESS = options.localAddress;
-    if(LOCALADDRESS) {
+    if (LOCALADDRESS) {
         console.log(`发送localaddress: ${LOCALADDRESS.split(',').map(host => `${host}`)}`)
     }
 
-    const NGINX_SERVER = options.nginx_server;
-    if(NGINX_SERVER) {
-        console.log(`发送nginx_server: ${NGINX_SERVER.split(',').map(host => `http://${host}`)}`)
-    }
-
+    // const NGINX_SERVER = options.nginx_server;
+    // if (NGINX_SERVER) {
+    //     console.log(`发送nginx_server: ${NGINX_SERVER.split(',').map(host => `http://${host}`)}`)
+    // }
 
     // JUP 默认地址
     const JUPITER_HOST = options.host;
@@ -115,7 +128,7 @@ async function init() {
         programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
     });
     const ATA_LIST = [];
-    for (const {pubkey} of tokenResp.value) {
+    for (const { pubkey } of tokenResp.value) {
         ATA_LIST.push(pubkey.toBase58())
     }
 
@@ -123,6 +136,7 @@ async function init() {
     const THRESHOLD = options.threshold;
     const NAME = options.name;
     const ENABLE_FLASH_LOAN = options.enable_flash_loan;
+    const STATISTICAL_INTERVAL = options.statistical_interval;
 
     return {
         key,
@@ -145,11 +159,65 @@ async function init() {
         JITO_REGION,
         JITO_UUID,
         LOCALADDRESS,
-        NGINX_SERVER
+        // NGINX_SERVER
+        STATISTICAL_INTERVAL
     }
-
 }
 
+async function initSendWorkers(workerData) {
+
+
+    const sendWorker = new Worker('./SendWorker.js', {
+        workerData: {
+            ...workerData
+        }
+    });
+    sendWorker.on('message', async message => {
+        const { text } = message;
+        console.log(text)
+    });
+    sendWorker.on('error', (err) => {
+        console.error(err);
+    });
+    SEND_WORKERS.push(sendWorker)
+
+    // const LOCALADDRESS = workerData.LOCALADDRESS;
+    // const LOCALADDRESS_LIST = LOCALADDRESS ? LOCALADDRESS.split(',').map(host => `${host}`) : [];
+
+    // if (LOCALADDRESS_LIST.length > 0) {
+    //     LOCALADDRESS_LIST.forEach((address) => {
+    //         const sendWorker = new Worker('./SendWorker.js', {
+    //             workerData: {
+    //                 address,
+    //                 ...workerData
+    //             }
+    //         });
+    //         sendWorker.on('message', async message => {
+    //             const { text } = message;
+    //             console.log(text)
+    //         });
+    //         sendWorker.on('error', (err) => {
+    //             console.error(err);
+    //         });
+    //         SEND_WORKERS.push(sendWorker)
+    //     });
+    // } else {
+    //     const sendWorker = new Worker('./SendWorker.js', {
+    //         workerData: {
+    //             ...workerData
+    //         }
+    //     });
+    //     sendWorker.on('message', async message => {
+    //         const { text } = message;
+    //         console.log(text)
+    //     });
+    //     sendWorker.on('error', (err) => {
+    //         console.error(err);
+    //     });
+    //     SEND_WORKERS.push(sendWorker)
+    // }
+
+}
 
 /**
  * 执行入口。
@@ -157,25 +225,57 @@ async function init() {
  */
 async function main() {
     const workerData = await init();
-
     console.log('TOKENS:', TOKENS.toString());
 
+    const lastProfitMap = new Map();
     TOKENS.forEach((token) => {
-        const arbWorker = new Worker('./ArbWorker.js', {
+        lastProfitMap.set(token, -1);
+    });
+
+    TOKENS.forEach((token) => {
+        const quoteWorker = new Worker('./QuoteWorker.js', {
             workerData: {
                 token,
                 ...workerData
             }
         });
-        arbWorker.on('message', async message => {
-            const {text} = message;
-            console.log(text)
+        quoteWorker.on('message', async message => {
+            const tradeDataList = message.tradeDataList;
+            tradeDataList.forEach((data) => {
+                try {
+                    const index = getNextSendWorkerIndex();
+                    const worker = SEND_WORKERS[index];
+                    worker.postMessage(data);
+                    //tradeQueue.enqueue(data);
+                } catch (error) {
+                    console.error(`Error : ${error.message}`);
+                }
+            });
         });
-        arbWorker.on('error', (err) => {
+        quoteWorker.on('error', (err) => {
             console.error(err);
         });
-        WORKERS.push(arbWorker)
+        QUOTE_WORKERS.push(quoteWorker)
     });
+
+    initSendWorkers(workerData);
+    console.log('initSendWorker结束:', SEND_WORKERS.length);
+
+    // while (true) {
+    //     try {
+    //         const tradeData = tradeQueue.popqueue();
+    //         if (tradeData) {
+    //             const index = getNextSendWorkerIndex();
+    //             const worker = SEND_WORKERS[index];
+    //             worker.postMessage(tradeData);
+    //         }
+    //     } catch (e) {
+    //         console.error(e);
+    //         // 暂停 1000 ms
+    //         await new Promise(resolve => setTimeout(resolve, 1000));
+    //     }
+    // }
+
 }
 
 main().then();
