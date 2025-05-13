@@ -12,7 +12,7 @@ export class PoolCache {
       logger.trace(`Caching new pool for mint: ${state.baseMint.toString()}`);
       this.keys.set(state.baseMint.toString(), { id, state });
     }
-  }
+  }   
 
   public async get(mint: string): Promise<{ id: string; state: LiquidityStateV4 }> {
     return this.keys.get(mint)!;

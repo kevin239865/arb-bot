@@ -23,7 +23,7 @@ export class MarketCache {
             bytes: config.quoteToken.mint.toBase58(),
           },
         },
-      ],
+      ],   
     });
 
     for (const account of accounts) {
