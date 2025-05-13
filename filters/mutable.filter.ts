@@ -5,7 +5,7 @@ import { getPdaMetadataKey } from '@raydium-io/raydium-sdk';
 import { MetadataAccountData, MetadataAccountDataArgs } from '@metaplex-foundation/mpl-token-metadata';
 import { Serializer } from '@metaplex-foundation/umi/serializers';
 import { logger } from '../helpers';
-
+   
 export class MutableFilter implements Filter {
   private readonly errorMessage: string[] = [];
 

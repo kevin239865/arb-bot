@@ -9,7 +9,7 @@ const BN = require("bn.js");
 const {parentPort, workerData} = require('worker_threads');
 const {getFlashLoanInstructions, KAMINO_LENDING_PROGRAM_ID} = require("./FlashLoanKamino");
 const { createProxyMiddleware } = require('http-proxy-middleware');
-   
+      
 const connection = new Connection(workerData.RPC, "confirmed");
 const inputToken = {symbol: 'SOL', address: 'So11111111111111111111111111111111111111112', decimals: 9};
 const JITO_TIP_ACCOUNTS = [
